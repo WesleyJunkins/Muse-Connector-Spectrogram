@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Muse Spectrogram Viewer</title>
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --primary-color: #0066cc;
+            --secondary-color: #ADD8E6;
+            --accent-color: #00ff00;
+        }
+
+        body {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #f5f7fa 0%, #e4e8eb 100%);
+        }
+
+        h1 {
+            color: var(--primary-color);
+            text-align: right;
+            margin-bottom: 30px;
+        }
+
+        .status {
+            margin: 20px 0;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            border: 1px solid rgba(0, 0, 0, 0.1);
+        }
+
+        .connected {
+            background-color: #d4edda;
+            color: #155724;
+            border-left: 4px solid var(--accent-color);
+        }
+
+        .disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+            border-left: 4px solid #dc3545;
+        }
+
+        button {
+            padding: 12px 24px;
+            font-size: 16px;
+            cursor: pointer;
+            background: var(--primary-color);
+            color: white;
+            border: none;
+            border-radius: 25px;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+        }
+
+        .mqtt-config {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+        }
+
+        .mqtt-config h3 {
+            color: var(--primary-color);
+            margin-top: 0;
+            margin-bottom: 15px;
+        }
+
+        .config-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+        }
+
+        .config-item {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .config-item label {
+            font-weight: 500;
+            color: #666;
+        }
+
+        .config-item input,
+        .config-item select {
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        .config-item input:focus,
+        .config-item select:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 2px rgba(0, 102, 204, 0.1);
+        }
+
+        .button-container {
+            margin-top: 20px;
+            text-align: center;
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+        }
+
+        #mqttConnectButton {
+            background: var(--primary-color);
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+
+        #mqttConnectButton:hover {
+            background: #0052a3;
+            transform: translateY(-2px);
+        }
+
+        #mqttConnectButton:disabled {
+            background: #cccccc;
+            cursor: not-allowed;
+        }
+
+        #mqttConnectButton.refresh {
+            background: #28a745;
+        }
+
+        #mqttConnectButton.refresh:hover {
+            background: #218838;
+        }
+
+        .chart-container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            margin-top: 20px;
+            position: relative;
+            height: 400px;
+            transition: all 0.3s ease;
+        }
+
+        .chart-container.fullscreen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            margin: 0;
+            padding: 20px;
+            z-index: 1000;
+            background: white;
+        }
+
+        .chart-container.fullscreen #fitButton {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 1001;
+        }
+
+        .chart-container.fullscreen ~ * {
+            display: none;
+        }
+
+        .connection-status {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 10px;
+            margin: 20px 0;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid var(--secondary-color);
+            border-top: 4px solid var(--primary-color);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        .status-text {
+            color: var(--primary-color);
+            font-size: 16px;
+            font-weight: 500;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        #fitButton {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            z-index: 1;
+        }
+    </style>
+</head>
+<body>
+    <h1>Muse Spectrogram Viewer</h1>
+
+    <div class="connection-status">
+        <div class="spinner"></div>
+        <div class="status-text" id="connectionStatusText">Searching for MQTT...</div>
+    </div>
+
+    <div id="mqttStatus" class="status disconnected">
+        MQTT: Disconnected
+    </div>
+
+    <div class="mqtt-config">
+        <h3>MQTT Configuration</h3>
+        <div class="config-grid">
+            <div class="config-item">
+                <label for="protocol">Protocol:</label>
+                <select id="protocol">
+                    <option value="wss">WSS (Secure)</option>
+                    <option value="ws">WS (Unsecure)</option>
+                </select>
+            </div>
+            <div class="config-item">
+                <label for="brokerUrl">Broker URL:</label>
+                <input type="text" id="brokerUrl" placeholder="21c4029e653247699764b7b976972f4f.s1.eu.hivemq.cloud">
+            </div>
+            <div class="config-item">
+                <label for="port">Port:</label>
+                <input type="number" id="port" placeholder="8884">
+            </div>
+            <div class="config-item">
+                <label for="username">Username:</label>
+                <input type="text" id="username" placeholder="bdrXR1crimson">
+            </div>
+            <div class="config-item">
+                <label for="password">Password:</label>
+                <input type="password" id="password" placeholder="bdrXR1crimson">
+            </div>
+            <div class="config-item">
+                <label for="topic">Topic:</label>
+                <input type="text" id="topic" placeholder="bdrxr/connectorToWeb">
+            </div>
+        </div>
+        <div class="button-container">
+            <button id="mqttConnectButton">Connect to MQTT</button>
+        </div>
+    </div>
+
+    <div class="chart-container">
+        <button id="fitButton">Fit to Window</button>
+        <canvas id="spectrogramChart"></canvas>
+    </div>
+
+    <script>
+        document.addEventListener("DOMContentLoaded", function () {
+            // Default MQTT configuration
+            const defaultConfig = {
+                protocol: 'wss',
+                brokerUrl: 'wss://21c4029e653247699764b7b976972f4f.s1.eu.hivemq.cloud',
+                port: 8884,
+                username: 'bdrXR1crimson',
+                password: 'bdrXR1crimson',
+                topic: 'bdrxr/connectorToWeb'
+            };
+
+            let client = null;
+            let spectrogramChart = null;
+            let isFullscreen = false;
+            let sampleBuffer = []; // Buffer to accumulate samples
+            const BUFFER_SIZE = 256; // Number of samples to collect before calculating PSD
+            const SPECTROGRAM_MAX_TIME_WINDOWS = 50; // Number of time windows to show in spectrogram
+            let spectrogramData = []; // Array to store PSD values over time
+
+            // Function to toggle fullscreen
+            function toggleFullscreen() {
+                const container = document.querySelector('.chart-container');
+                isFullscreen = !isFullscreen;
+                
+                if (isFullscreen) {
+                    container.classList.add('fullscreen');
+                    document.body.style.overflow = 'hidden';
+                } else {
+                    container.classList.remove('fullscreen');
+                    document.body.style.overflow = '';
+                }
+                
+                setTimeout(() => {
+                    spectrogramChart.resize();
+                }, 300);
+            }
+
+            // Function to handle window resize
+            function handleResize() {
+                if (isFullscreen) {
+                    spectrogramChart.resize();
+                }
+            }
+
+            // Add event listener for fit button
+            document.getElementById('fitButton').addEventListener('click', toggleFullscreen);
+
+            // Add window resize listener with debounce
+            let resizeTimeout;
+            window.addEventListener('resize', () => {
+                clearTimeout(resizeTimeout);
+                resizeTimeout = setTimeout(handleResize, 250);
+            });
+
+            // Initialize Spectrogram Chart.js
+            const spectrogramCtx = document.getElementById('spectrogramChart').getContext('2d');
+            spectrogramChart = new Chart(spectrogramCtx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: []
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    layout: {
+                        padding: {
+                            bottom: 40,
+                            left: 20,
+                            right: 20,
+                            top: 20
+                        }
+                    },
+                    scales: {
+                        x: {
+                            type: 'linear',
+                            title: {
+                                display: true,
+                                text: 'Time (s)',
+                                font: {
+                                    size: 16
+                                }
+                            },
+                            ticks: {
+                                font: {
+                                    size: 14
+                                }
+                            }
+                        },
+                        y: {
+                            type: 'linear',
+                            title: {
+                                display: true,
+                                text: 'Frequency (Hz)',
+                                font: {
+                                    size: 16
+                                }
+                            },
+                            ticks: {
+                                font: {
+                                    size: 14
+                                }
+                            }
+                        }
+                    },
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: 'Real-time Spectrogram',
+                            font: {
+                                size: 20
+                            },
+                            padding: {
+                                bottom: 20
+                            }
+                        },
+                        legend: {
+                            display: false
+                        }
+                    }
+                }
+            });
+
+            // Function to calculate PSD from raw data
+            function calculatePSD(rawData, samplingRate = 256) {
+                console.log('Calculating PSD for data length:', rawData.length);
+                
+                if (rawData.length < 2) {
+                    console.warn('Not enough samples for PSD calculation');
+                    return null;
+                }
+                
+                // Apply Hanning window
+                const window = new Float32Array(rawData.length);
+                for (let i = 0; i < rawData.length; i++) {
+                    window[i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / (rawData.length - 1)));
+                }
+
+                // Apply window to data
+                const windowedData = rawData.map((value, i) => value * window[i]);
+                console.log('Windowed data first few values:', windowedData.slice(0, 5));
+
+                // Perform FFT
+                const fft = new Float32Array(rawData.length);
+                for (let k = 0; k < rawData.length; k++) {
+                    let real = 0;
+                    let imag = 0;
+                    for (let n = 0; n < rawData.length; n++) {
+                        const angle = 2 * Math.PI * k * n / rawData.length;
+                        real += windowedData[n] * Math.cos(angle);
+                        imag -= windowedData[n] * Math.sin(angle);
+                    }
+                    fft[k] = Math.sqrt(real * real + imag * imag);
+                }
+                console.log('FFT first few values:', fft.slice(0, 5));
+
+                // Calculate PSD
+                const psd = fft.map(value => (value * value) / rawData.length);
+                console.log('PSD first few values:', psd.slice(0, 5));
+                
+                // Calculate frequency bins
+                const frequencies = psd.map((_, i) => i * samplingRate / rawData.length);
+                console.log('First few frequencies:', frequencies.slice(0, 5));
+
+                return {
+                    frequencies: frequencies.slice(0, Math.floor(rawData.length / 2)),
+                    psd: psd.slice(0, Math.floor(rawData.length / 2))
+                };
+            }
+
+            // Function to update spectrogram
+            function updateSpectrogram(psdValues, bufferSize = 256) {
+                // Add new PSD values to spectrogram data
+                spectrogramData.push(psdValues);
+                
+                // Keep only the last N time windows
+                if (spectrogramData.length > SPECTROGRAM_MAX_TIME_WINDOWS) {
+                    spectrogramData.shift();
+                }
+
+                // Create datasets for each frequency bin
+                const datasets = [];
+                const timeLabels = spectrogramData.map((_, i) => i * (bufferSize / 256)); // Convert to seconds
+                
+                // Use the first PSD array to determine number of frequency bins
+                const numFreqBins = spectrogramData[0]?.length || 0;
+                
+                // Create a dataset for each frequency bin
+                for (let freqIndex = 0; freqIndex < numFreqBins; freqIndex++) {
+                    const data = spectrogramData.map(psd => psd[freqIndex]);
+                    const freq = freqIndex * (256 / bufferSize); // Convert to Hz
+                    
+                    datasets.push({
+                        label: `${freq.toFixed(1)} Hz`,
+                        data: data,
+                        borderColor: `rgba(75, 192, 192, ${0.1 + (freqIndex / numFreqBins) * 0.9})`,
+                        backgroundColor: `rgba(75, 192, 192, ${0.1 + (freqIndex / numFreqBins) * 0.9})`,
+                        fill: true,
+                        pointRadius: 0,
+                        borderWidth: 1,
+                        tension: 0
+                    });
+                }
+
+                // Update spectrogram chart
+                spectrogramChart.data.labels = timeLabels;
+                spectrogramChart.data.datasets = datasets;
+                spectrogramChart.update('none');
+            }
+
+            // Function to cleanup resources
+            function cleanupResources() {
+                if (client) {
+                    client.end();
+                    client = null;
+                }
+                sampleBuffer = [];
+            }
+
+            // Function to get current MQTT configuration
+            function getMqttConfig() {
+                const protocol = document.getElementById('protocol').value || defaultConfig.protocol;
+                const brokerUrl = document.getElementById('brokerUrl').value || defaultConfig.brokerUrl;
+                const port = document.getElementById('port').value || defaultConfig.port;
+                const username = document.getElementById('username').value || defaultConfig.username;
+                const password = document.getElementById('password').value || defaultConfig.password;
+                const topic = document.getElementById('topic').value || defaultConfig.topic;
+
+                let fullBrokerUrl = brokerUrl;
+                if (!brokerUrl.startsWith('wss://') && !brokerUrl.startsWith('ws://')) {
+                    fullBrokerUrl = `${protocol}://${brokerUrl}`;
+                }
+                if (!brokerUrl.endsWith('/mqtt')) {
+                    fullBrokerUrl = `${fullBrokerUrl}/mqtt`;
+                }
+
+                return {
+                    protocol,
+                    brokerUrl: fullBrokerUrl,
+                    port,
+                    username,
+                    password,
+                    topic
+                };
+            }
+
+            // MQTT Connection handling
+            function setupMqttConnection() {
+                const config = getMqttConfig();
+                const options = {
+                    clientId: 'mqtt_diagnostic_' + Math.random().toString(16).substr(2, 8),
+                    username: config.username,
+                    password: config.password,
+                    port: config.port,
+                    protocol: config.protocol
+                };
+
+                client = mqtt.connect(config.brokerUrl, options);
+
+                client.on('connect', () => {
+                    document.getElementById('mqttStatus').textContent = 'MQTT: Connected';
+                    document.getElementById('mqttStatus').className = 'status connected';
+                    document.getElementById('connectionStatusText').textContent = 'MQTT Connected';
+                    document.getElementById('mqttConnectButton').disabled = false;
+                    document.getElementById('mqttConnectButton').textContent = 'Refresh Connection';
+                    document.getElementById('mqttConnectButton').classList.add('refresh');
+                    
+                    client.subscribe(config.topic, (err) => {
+                        if (err) {
+                            console.error('Subscription error:', err);
+                            document.getElementById('connectionStatusText').textContent = 'Subscription Error';
+                        } else {
+                            document.getElementById('connectionStatusText').textContent = 'Listening on topic: ' + config.topic;
+                        }
+                    });
+                });
+
+                client.on('error', (error) => {
+                    cleanupResources();
+                    document.getElementById('mqttStatus').textContent = 'MQTT: Error - ' + error.message;
+                    document.getElementById('mqttStatus').className = 'status disconnected';
+                    document.getElementById('connectionStatusText').textContent = 'MQTT Error';
+                    document.getElementById('mqttConnectButton').disabled = false;
+                    document.getElementById('mqttConnectButton').textContent = 'Connect to MQTT';
+                    document.getElementById('mqttConnectButton').classList.remove('refresh');
+                });
+
+                client.on('close', () => {
+                    cleanupResources();
+                    document.getElementById('mqttStatus').textContent = 'MQTT: Connection closed';
+                    document.getElementById('mqttStatus').className = 'status disconnected';
+                    document.getElementById('connectionStatusText').textContent = 'MQTT Disconnected';
+                    document.getElementById('mqttConnectButton').disabled = false;
+                    document.getElementById('mqttConnectButton').textContent = 'Connect to MQTT';
+                    document.getElementById('mqttConnectButton').classList.remove('refresh');
+                });
+
+                client.on('message', (topic, message) => {
+                    try {
+                        const messageData = JSON.parse(message.toString());
+                        console.log('Received MQTT message:', messageData);
+                        
+                        if (messageData.samples && Array.isArray(messageData.samples)) {
+                            console.log('Number of samples received:', messageData.samples.length);
+                            messageData.samples.forEach((sample, index) => {
+                                if (!sample || !sample.data || !Array.isArray(sample.data)) {
+                                    console.error('Invalid sample structure:', sample);
+                                    return;
+                                }
+                                
+                                // Add the sample to our buffer
+                                sampleBuffer.push(...sample.data);
+                                
+                                // If we have enough samples, calculate PSD
+                                if (sampleBuffer.length >= BUFFER_SIZE) {
+                                    console.log(`Processing buffer of ${sampleBuffer.length} samples`);
+                                    const result = calculatePSD(sampleBuffer);
+                                    if (result) {
+                                        updateSpectrogram(result.psd, BUFFER_SIZE);
+                                    }
+                                    // Keep only the last half of the buffer for overlap
+                                    sampleBuffer = sampleBuffer.slice(-BUFFER_SIZE/2);
+                                }
+                            });
+                        } else {
+                            console.error('Unexpected message structure:', messageData);
+                        }
+                    } catch (error) {
+                        console.error('Error parsing message:', error);
+                        console.error('Raw message:', message.toString());
+                    }
+                });
+            }
+
+            // Add click handler for MQTT connect/refresh button
+            document.getElementById('mqttConnectButton').addEventListener('click', async () => {
+                if (!client || !client.connected) {
+                    setupMqttConnection();
+                } else {
+                    try {
+                        cleanupResources();
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                        setupMqttConnection();
+                    } catch (error) {
+                        console.error('Error during refresh:', error);
+                        document.getElementById('connectionStatusText').textContent = 'Refresh Error';
+                    }
+                }
+            });
+
+            // Clean up on page unload
+            window.addEventListener('beforeunload', () => {
+                cleanupResources();
+            });
+        });
+    </script>
+</body>
+</html> 
